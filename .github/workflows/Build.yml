@@ -1,0 +1,103 @@
+# Copyright (c) Microsoft Corporation
+# SPDX-License-Identifier: MIT
+
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        required: true
+        type: string
+      configuration:
+        required: true
+        type: string
+      option:
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+
+    runs-on: ${{inputs.platform}}
+    env:
+      BUILD_TYPE: ${{inputs.configuration}}
+
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        submodules: 'recursive'
+
+    - name: Install prerequisites - Ubuntu-22.04
+      if: inputs.platform == 'ubuntu-22.04'
+      run: |
+        sudo apt update
+        sudo apt-get install -y \
+         gcc-multilib \
+         lcov \
+         pkg-config \
+         libelf-dev \
+
+    - name: Clone and build libbpf - Ubuntu-22.04
+      if: inputs.platform == 'ubuntu-22.04'
+      run: |
+        git clone https://github.com/libbpf/libbpf.git
+        cd libbpf
+        git checkout v0.7.0
+        cd src
+        make
+        sudo LIBDIR=/lib/x86_64-linux-gnu make install
+        sudo ldconfig
+
+    - name: Get Linux Kernel version
+      if: inputs.platform == 'ubuntu-22.04'
+      run: |
+        echo "COMMIT_SHA=$(uname -r)" >> $env:GITHUB_ENV
+
+    - name: Configure CMake - Windows-2019 or Windows-2022
+      if: inputs.platform == 'windows-2019' || inputs.platform == 'windows-2022'
+      run: |
+        cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
+
+    - name: Configure CMake - Ubuntu-22.04
+      if: inputs.platform == 'ubuntu-22.04'
+      run: |
+        if [ "${{inputs.option}}" = "sanitizer" ]; then
+          export SANITIZER_FLAGS="-fsanitize=address -fsanitize=undefined -fno-sanitize-recover=all"
+        fi
+        if [ "${{inputs.option}}" = "coverage" ]; then
+          export COVERAGE_FLAGS="-DCMAKE_CXX_FLAGS=\"--coverage\" -DCMAKE_C_FLAGS=\"--coverage\""
+        fi
+        cmake \
+          -B ${{github.workspace}}/build \
+          -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+          -DCMAKE_CXX_FLAGS="${SANITIZER_FLAGS}" \
+          -DCMAKE_C_FLAGS="${SANITIZER_FLAGS}" \
+          ${COVERAGE_FLAGS}
+
+    - name: Build
+      # Build your program with the given configuration
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v2
+      with:
+        name: build-${{env.BUILD_TYPE}}-${{inputs.platform}}
+        path: ${{github.workspace}}/build/bin
+
+    - name: Generate code coverage report
+      if: inputs.option == 'coverage'
+      run: |
+        mkdir -p coverage
+        lcov --capture --directory build --include '${{github.workspace}}/*' --output-file coverage/lcov.info --exclude '${{github.workspace}}/external/*' --exclude '${{github.workspace}}/build/*'
+
+    - name: Coveralls Parallel
+      if: inputs.option == 'coverage'
+      uses: coverallsapp/github-action@v2.2.1
+      with:
+        github-token: ${{ secrets.github_token }}
+        flag-name: run-${{inputs.build_type}}-${{inputs.platform}}-${{inputs.arch}}
+        parallel: true

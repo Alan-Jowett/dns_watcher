@@ -1,0 +1,63 @@
+# Copyright (c) Microsoft Corporation
+# SPDX-License-Identifier: MIT
+
+# Main YML file for the CICD pipeline
+
+name: CI/CD
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  # Run on a daily schedule to perform the full set of tests.
+  schedule:
+    - cron: '00 21 * * *'
+
+permissions:
+  id-token: write
+  contents: read
+  packages: write
+
+concurrency:
+  # Cancel any CI/CD workflow currently in progress for the same PR.
+  # Allow running concurrently with any other commits.
+  group: cicd-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  build_and_test:
+    strategy:
+      matrix:
+        configuration: [ 'Release', 'Debug' ]
+        platform: [  'windows-2019', 'windows-2022' ] # 'ubuntu-22.04',
+        option: [ none ] # , sanitizer, coverage, jit ]
+        exclude:
+          - platform: windows-2019
+            option: sanitizer
+          - platform: windows-2019
+            option: coverage
+          - platform: windows-2022
+            option: sanitizer
+          - platform: windows-2022
+            option: coverage
+          - platform: ubuntu-22.04
+            option: jit
+
+    uses: ./.github/workflows/Build.yml
+    with:
+      platform: ${{ matrix.platform }}
+      configuration: ${{ matrix.configuration }}
+      option: ${{ matrix.option }}
+
+  finish:
+    needs:
+      - build_and_test
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Coveralls Finished
+      uses: coverallsapp/github-action@v2.2.1
+      with:
+        github-token: ${{ secrets.github_token }}
+        parallel-finished: true
+
